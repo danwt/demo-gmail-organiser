@@ -45,7 +45,7 @@ CATEGORY_DESCRIPTIONS = {
     "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
 }
 
-BATCH_SIZE = 150
+BATCH_SIZE = 50
 MAPPINGS_FILE = "mappings.json"
 
 
