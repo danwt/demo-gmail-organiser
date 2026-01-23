@@ -45,7 +45,7 @@ CATEGORY_DESCRIPTIONS = {
     "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
 }
 
-BATCH_SIZE = 30
+BATCH_SIZE = 150
 MAPPINGS_FILE = "mappings.json"
 
 
@@ -122,7 +122,6 @@ def fetch_message_metadata(service, msg_id):
         "id": msg_id,
         "from": headers.get("From", ""),
         "subject": headers.get("Subject", ""),
-        "snippet": msg.get("snippet", ""),
         "labels": labels,
     }
 
@@ -136,7 +135,7 @@ def already_classified(msg_metadata, label_map):
 def classify_batch(llm, messages):
     categories_desc = "\n".join(f"- {cat}: {desc}" for cat, desc in CATEGORY_DESCRIPTIONS.items())
     emails_desc = "\n".join(
-        f'{i+1}. From: {m["from"]} | Subject: {m["subject"]} | Preview: {m["snippet"][:100]}'
+        f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
         for i, m in enumerate(messages)
     )
 
@@ -212,9 +211,8 @@ def cmd_classify():
         if already_classified(meta, label_map):
             continue
         to_classify.append(meta)
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 500 == 0:
             print(f"  Checked {i+1}/{len(all_ids)}, queued {len(to_classify)} for classification")
-        time.sleep(0.05)
 
     print(f"Emails to classify: {len(to_classify)}")
 
@@ -246,7 +244,6 @@ def cmd_classify():
                 "subject": msg["subject"],
                 "category": cat,
             })
-            time.sleep(0.02)
 
         save_mappings(mappings)
         print(f"  Batch {batch_num} done, {len(mappings)} total classified")
