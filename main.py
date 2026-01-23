@@ -9,6 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from openai import OpenAI
 
 load_dotenv()
@@ -46,8 +47,9 @@ CATEGORY_DESCRIPTIONS = {
     "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
 }
 
-BATCH_SIZE = 50
+BATCH_SIZE = 20
 MAPPINGS_FILE = "mappings.json"
+ARCHIVE_CATEGORIES = {"junk", "newsletter", "purchases", "events"}
 
 
 def get_client_config():
@@ -149,6 +151,9 @@ def classify_batch(llm, messages):
 
 {categories_desc}
 
+To be aboslutely clear, the point of this is to filter signal from noise: when in doubt, default to junk!
+For example, a cold call or promotion is still junk even if it is promoting crypto or a job (i.e. it's not finance or job categories!)
+
 Emails:
 {emails_desc}
 
@@ -207,10 +212,13 @@ def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, ba
         if force:
             existing_cat_labels = [lid for lid in meta["labels"] if lid in category_label_ids]
             if existing_cat_labels:
-                service.users().messages().modify(
-                    userId="me", id=msg_id,
-                    body={"removeLabelIds": existing_cat_labels}
-                ).execute()
+                try:
+                    service.users().messages().modify(
+                        userId="me", id=msg_id,
+                        body={"removeLabelIds": existing_cat_labels}
+                    ).execute()
+                except HttpError:
+                    continue
         batch.append(meta)
 
     if not batch:
@@ -228,10 +236,16 @@ def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, ba
             return
 
     for msg, cat in zip(batch, classifications):
-        service.users().messages().modify(
-            userId="me", id=msg["id"],
-            body={"addLabelIds": [label_map[cat]]}
-        ).execute()
+        modify_body = {"addLabelIds": [label_map[cat]]}
+        if cat in ARCHIVE_CATEGORIES:
+            modify_body["removeLabelIds"] = ["INBOX"]
+        try:
+            service.users().messages().modify(
+                userId="me", id=msg["id"],
+                body=modify_body
+            ).execute()
+        except HttpError:
+            continue
         mappings.append({
             "id": msg["id"],
             "from": msg["from"],
