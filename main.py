@@ -35,14 +35,14 @@ CATEGORIES = [
 
 CATEGORY_DESCRIPTIONS = {
     "family-and-friends": "things directly sent to me by family and friends",
-    "jobs": "related to jobs I applied for and interview processes etc",
+    "jobs": "related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs, these are junk",
     "financial": "related to property I own, my stocks, pensions, bank accounts, tax, crypto etc",
     "businesses": "related to businesses I run",
     "cloud": "anything related to cloud infra i'm running on various cloud accounts such as GCP AWS Cloudflare etc",
-    "junk": "any pure spam, scam, marketing, or promotion",
-    "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing",
+    "junk": "any pure spam, scam, marketing, or promotion or other noise",
+    "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing, (note includes much discussion on apache org stuff)",
     "events": "anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights",
-    "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions",
+    "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise",
     "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
 }
 
@@ -194,15 +194,23 @@ def cmd_auth():
     print("Auth complete, token.json saved.")
 
 
-def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num):
+def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force=False):
     batch = []
+    category_label_ids = [label_map[cat] for cat in CATEGORIES]
     for msg_id in msg_ids:
-        if msg_id in classified_ids:
+        if not force and msg_id in classified_ids:
             continue
         meta = fetch_message_metadata(service, msg_id)
-        if already_classified(meta, label_map):
+        if not force and already_classified(meta, label_map):
             classified_ids.add(msg_id)
             continue
+        if force:
+            existing_cat_labels = [lid for lid in meta["labels"] if lid in category_label_ids]
+            if existing_cat_labels:
+                service.users().messages().modify(
+                    userId="me", id=msg_id,
+                    body={"removeLabelIds": existing_cat_labels}
+                ).execute()
         batch.append(meta)
 
     if not batch:
@@ -237,15 +245,21 @@ def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, ba
 
 
 def cmd_classify():
+    force = "--force" in sys.argv
     service = get_gmail_service()
     llm = get_llm_client()
 
     print("Ensuring labels exist...")
     label_map = ensure_labels(service)
 
-    mappings = load_mappings()
-    classified_ids = {m["id"] for m in mappings}
-    print(f"Already classified: {len(classified_ids)}")
+    if force:
+        print("Force mode: reclassifying all emails")
+        mappings = []
+        classified_ids = set()
+    else:
+        mappings = load_mappings()
+        classified_ids = {m["id"] for m in mappings}
+        print(f"Already classified: {len(classified_ids)}")
 
     page_token = None
     batch_num = 0
@@ -260,7 +274,7 @@ def cmd_classify():
         batch_num += 1
 
         print(f"  Processing batch {batch_num} ({total_fetched} fetched so far)...")
-        process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num)
+        process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force)
 
         page_token = resp.get("nextPageToken")
         if not page_token:
