@@ -1,0 +1,6 @@
+services:
+  organiser:
+    build: .
+    env_file: .env
+    volumes:
+      - ./token.json:/app/token.json
