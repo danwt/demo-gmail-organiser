@@ -172,7 +172,9 @@ Only use category names from the list above. Respond with ONLY the JSON array, n
 def load_mappings():
     if os.path.exists(MAPPINGS_FILE):
         with open(MAPPINGS_FILE) as f:
-            return json.load(f)
+            content = f.read().strip()
+            if content:
+                return json.loads(content)
     return []
 
 
