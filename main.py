@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import base64
 
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
@@ -25,7 +26,7 @@ CATEGORIES = [
     "financial",
     "businesses",
     "cloud",
-    "spam",
+    "junk",
     "newsletter",
     "events",
     "purchases",
@@ -34,18 +35,18 @@ CATEGORIES = [
 
 CATEGORY_DESCRIPTIONS = {
     "family-and-friends": "things directly sent to me by family and friends",
-    "jobs": "related to jobs I applied for and interview processes etc",
+    "jobs": "related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs, these are junk",
     "financial": "related to property I own, my stocks, pensions, bank accounts, tax, crypto etc",
     "businesses": "related to businesses I run",
     "cloud": "anything related to cloud infra i'm running on various cloud accounts such as GCP AWS Cloudflare etc",
-    "spam": "any pure spam or scam or marketing or promotion",
-    "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing",
+    "junk": "any pure spam, scam, marketing, or promotion or other noise",
+    "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing, (note includes much discussion on apache org stuff)",
     "events": "anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights",
-    "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions",
+    "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise",
     "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
 }
 
-BATCH_SIZE = 30
+BATCH_SIZE = 50
 MAPPINGS_FILE = "mappings.json"
 
 
@@ -96,33 +97,31 @@ def ensure_labels(service):
     return label_map
 
 
-def fetch_all_message_ids(service):
-    ids = []
-    page_token = None
-    while True:
-        resp = service.users().messages().list(
-            userId="me", maxResults=500, pageToken=page_token
-        ).execute()
-        ids.extend(msg["id"] for msg in resp.get("messages", []))
-        page_token = resp.get("nextPageToken")
-        print(f"  Fetched {len(ids)} message IDs...")
-        if not page_token:
-            break
-    return ids
+def extract_body_text(payload):
+    if payload.get("mimeType", "").startswith("text/plain"):
+        data = payload.get("body", {}).get("data", "")
+        if data:
+                return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        text = extract_body_text(part)
+        if text:
+            return text
+    return ""
 
 
 def fetch_message_metadata(service, msg_id):
     msg = service.users().messages().get(
-        userId="me", id=msg_id, format="metadata",
-        metadataHeaders=["From", "Subject"]
+        userId="me", id=msg_id, format="full"
     ).execute()
     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
     labels = msg.get("labelIds", [])
+    body = extract_body_text(msg.get("payload", {}))
     return {
         "id": msg_id,
         "from": headers.get("From", ""),
         "subject": headers.get("Subject", ""),
         "snippet": msg.get("snippet", ""),
+        "body": body[:1000],
         "labels": labels,
     }
 
@@ -135,10 +134,16 @@ def already_classified(msg_metadata, label_map):
 
 def classify_batch(llm, messages):
     categories_desc = "\n".join(f"- {cat}: {desc}" for cat, desc in CATEGORY_DESCRIPTIONS.items())
-    emails_desc = "\n".join(
-        f'{i+1}. From: {m["from"]} | Subject: {m["subject"]} | Preview: {m["snippet"][:100]}'
-        for i, m in enumerate(messages)
-    )
+    def format_email(i, m):
+        lines = f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
+        body = m.get("body", "").strip()
+        if body:
+            lines += f'\n   Body: {body[:500]}'
+        elif m.get("snippet"):
+            lines += f'\n   Preview: {m["snippet"]}'
+        return lines
+
+    emails_desc = "\n".join(format_email(i, m) for i, m in enumerate(messages))
 
     prompt = f"""Classify each email into exactly ONE of these categories:
 
@@ -147,7 +152,7 @@ def classify_batch(llm, messages):
 Emails:
 {emails_desc}
 
-Respond with a JSON array of strings, one category per email, in the same order. Example: ["spam", "financial", "jobs"]
+Respond with a JSON array of strings, one category per email, in the same order. Example: ["junk", "financial", "jobs"]
 Only use category names from the list above. Respond with ONLY the JSON array, no other text."""
 
     resp = llm.chat.completions.create(
@@ -172,7 +177,9 @@ Only use category names from the list above. Respond with ONLY the JSON array, n
 def load_mappings():
     if os.path.exists(MAPPINGS_FILE):
         with open(MAPPINGS_FILE) as f:
-            return json.load(f)
+            content = f.read().strip()
+            if content:
+                return json.loads(content)
     return []
 
 
@@ -187,69 +194,93 @@ def cmd_auth():
     print("Auth complete, token.json saved.")
 
 
+def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force=False):
+    batch = []
+    category_label_ids = [label_map[cat] for cat in CATEGORIES]
+    for msg_id in msg_ids:
+        if not force and msg_id in classified_ids:
+            continue
+        meta = fetch_message_metadata(service, msg_id)
+        if not force and already_classified(meta, label_map):
+            classified_ids.add(msg_id)
+            continue
+        if force:
+            existing_cat_labels = [lid for lid in meta["labels"] if lid in category_label_ids]
+            if existing_cat_labels:
+                service.users().messages().modify(
+                    userId="me", id=msg_id,
+                    body={"removeLabelIds": existing_cat_labels}
+                ).execute()
+        batch.append(meta)
+
+    if not batch:
+        return
+
+    try:
+        classifications = classify_batch(llm, batch)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"  ERROR in batch {batch_num}: {e}, retrying...")
+        time.sleep(2)
+        try:
+            classifications = classify_batch(llm, batch)
+        except Exception as e2:
+            print(f"  FAILED batch {batch_num}: {e2}, skipping")
+            return
+
+    for msg, cat in zip(batch, classifications):
+        service.users().messages().modify(
+            userId="me", id=msg["id"],
+            body={"addLabelIds": [label_map[cat]]}
+        ).execute()
+        mappings.append({
+            "id": msg["id"],
+            "from": msg["from"],
+            "subject": msg["subject"],
+            "category": cat,
+        })
+        classified_ids.add(msg["id"])
+
+    save_mappings(mappings)
+    print(f"  Batch {batch_num} done: classified {len(batch)}, total {len(mappings)}")
+
+
 def cmd_classify():
+    force = "--force" in sys.argv
     service = get_gmail_service()
     llm = get_llm_client()
 
     print("Ensuring labels exist...")
     label_map = ensure_labels(service)
 
-    print("Fetching all message IDs...")
-    all_ids = fetch_all_message_ids(service)
-    print(f"Total messages: {len(all_ids)}")
+    if force:
+        print("Force mode: reclassifying all emails")
+        mappings = []
+        classified_ids = set()
+    else:
+        mappings = load_mappings()
+        classified_ids = {m["id"] for m in mappings}
+        print(f"Already classified: {len(classified_ids)}")
 
-    mappings = load_mappings()
-    classified_ids = {m["id"] for m in mappings}
+    page_token = None
+    batch_num = 0
+    total_fetched = 0
 
-    to_classify = []
-    print("Fetching metadata and filtering already-classified...")
-    for i, msg_id in enumerate(all_ids):
-        if msg_id in classified_ids:
-            continue
-        meta = fetch_message_metadata(service, msg_id)
-        if already_classified(meta, label_map):
-            continue
-        to_classify.append(meta)
-        if (i + 1) % 100 == 0:
-            print(f"  Checked {i+1}/{len(all_ids)}, queued {len(to_classify)} for classification")
-        time.sleep(0.05)
+    while True:
+        resp = service.users().messages().list(
+            userId="me", maxResults=BATCH_SIZE, pageToken=page_token
+        ).execute()
+        msg_ids = [m["id"] for m in resp.get("messages", [])]
+        total_fetched += len(msg_ids)
+        batch_num += 1
 
-    print(f"Emails to classify: {len(to_classify)}")
+        print(f"  Processing batch {batch_num} ({total_fetched} fetched so far)...")
+        process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force)
 
-    for batch_start in range(0, len(to_classify), BATCH_SIZE):
-        batch = to_classify[batch_start:batch_start + BATCH_SIZE]
-        batch_num = batch_start // BATCH_SIZE + 1
-        total_batches = (len(to_classify) + BATCH_SIZE - 1) // BATCH_SIZE
-        print(f"  Classifying batch {batch_num}/{total_batches}...")
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
 
-        try:
-            classifications = classify_batch(llm, batch)
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"  ERROR in batch {batch_num}: {e}, retrying...")
-            time.sleep(2)
-            try:
-                classifications = classify_batch(llm, batch)
-            except Exception as e2:
-                print(f"  FAILED batch {batch_num}: {e2}, skipping")
-                continue
-
-        for msg, cat in zip(batch, classifications):
-            service.users().messages().modify(
-                userId="me", id=msg["id"],
-                body={"addLabelIds": [label_map[cat]]}
-            ).execute()
-            mappings.append({
-                "id": msg["id"],
-                "from": msg["from"],
-                "subject": msg["subject"],
-                "category": cat,
-            })
-            time.sleep(0.02)
-
-        save_mappings(mappings)
-        print(f"  Batch {batch_num} done, {len(mappings)} total classified")
-
-    print(f"Classification complete. {len(mappings)} emails classified.")
+    print(f"Classification complete: {len(mappings)} emails classified")
     print(f"Mappings saved to {MAPPINGS_FILE}")
 
 
