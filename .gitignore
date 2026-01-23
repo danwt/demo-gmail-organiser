@@ -1,6 +1,7 @@
 .env
 token.json
 credentials.json
+mappings.json
 __pycache__/
 *.pyc
 .venv/
