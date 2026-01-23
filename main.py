@@ -25,7 +25,7 @@ CATEGORIES = [
     "financial",
     "businesses",
     "cloud",
-    "spam",
+    "junk",
     "newsletter",
     "events",
     "purchases",
@@ -38,7 +38,7 @@ CATEGORY_DESCRIPTIONS = {
     "financial": "related to property I own, my stocks, pensions, bank accounts, tax, crypto etc",
     "businesses": "related to businesses I run",
     "cloud": "anything related to cloud infra i'm running on various cloud accounts such as GCP AWS Cloudflare etc",
-    "spam": "any pure spam or scam or marketing or promotion",
+    "junk": "any pure spam, scam, marketing, or promotion",
     "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing",
     "events": "anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights",
     "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions",
@@ -147,7 +147,7 @@ def classify_batch(llm, messages):
 Emails:
 {emails_desc}
 
-Respond with a JSON array of strings, one category per email, in the same order. Example: ["spam", "financial", "jobs"]
+Respond with a JSON array of strings, one category per email, in the same order. Example: ["junk", "financial", "jobs"]
 Only use category names from the list above. Respond with ONLY the JSON array, no other text."""
 
     resp = llm.chat.completions.create(
