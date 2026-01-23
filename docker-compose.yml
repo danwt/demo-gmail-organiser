@@ -1,6 +1,8 @@
 services:
-  organiser:
+  classify:
     build: .
     env_file: .env
+    command: ["classify"]
     volumes:
       - ./token.json:/app/token.json
+      - ./mappings.json:/app/mappings.json
