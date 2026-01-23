@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import base64
 
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
@@ -96,17 +97,31 @@ def ensure_labels(service):
     return label_map
 
 
+def extract_body_text(payload):
+    if payload.get("mimeType", "").startswith("text/plain"):
+        data = payload.get("body", {}).get("data", "")
+        if data:
+                return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        text = extract_body_text(part)
+        if text:
+            return text
+    return ""
+
+
 def fetch_message_metadata(service, msg_id):
     msg = service.users().messages().get(
-        userId="me", id=msg_id, format="metadata",
-        metadataHeaders=["From", "Subject"]
+        userId="me", id=msg_id, format="full"
     ).execute()
     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
     labels = msg.get("labelIds", [])
+    body = extract_body_text(msg.get("payload", {}))
     return {
         "id": msg_id,
         "from": headers.get("From", ""),
         "subject": headers.get("Subject", ""),
+        "snippet": msg.get("snippet", ""),
+        "body": body[:1000],
         "labels": labels,
     }
 
@@ -119,10 +134,16 @@ def already_classified(msg_metadata, label_map):
 
 def classify_batch(llm, messages):
     categories_desc = "\n".join(f"- {cat}: {desc}" for cat, desc in CATEGORY_DESCRIPTIONS.items())
-    emails_desc = "\n".join(
-        f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
-        for i, m in enumerate(messages)
-    )
+    def format_email(i, m):
+        lines = f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
+        body = m.get("body", "").strip()
+        if body:
+            lines += f'\n   Body: {body[:500]}'
+        elif m.get("snippet"):
+            lines += f'\n   Preview: {m["snippet"]}'
+        return lines
+
+    emails_desc = "\n".join(format_email(i, m) for i, m in enumerate(messages))
 
     prompt = f"""Classify each email into exactly ONE of these categories:
 
