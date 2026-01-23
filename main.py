@@ -211,7 +211,7 @@ def cmd_classify():
         if already_classified(meta, label_map):
             continue
         to_classify.append(meta)
-        if (i + 1) % 500 == 0:
+        if (i + 1) % 100 == 0:
             print(f"  Checked {i+1}/{len(all_ids)}, queued {len(to_classify)} for classification")
 
     print(f"Emails to classify: {len(to_classify)}")
