@@ -1,0 +1,40 @@
+categories:
+  - name: family-and-friends
+    description: things directly sent to me by family and friends
+    archive: false
+
+  - name: jobs
+    description: related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs/job newsletters, these are junk
+    archive: false
+
+  - name: financial
+    description: related to property I own, my stocks, pensions, bank accounts, tax, crypto etc - does NOT include generic info on these topics, only stuff I actually have accounts with
+    archive: false
+
+  - name: businesses
+    description: related to businesses I run
+    archive: false
+
+  - name: cloud
+    description: anything related to cloud infra i'm running/paying for on various cloud accounts such as GCP AWS Cloudflare etc
+    archive: false
+
+  - name: junk
+    description: any pure spam, scam, marketing, or promotion or other noise
+    archive: true
+
+  - name: newsletter
+    description: any regular newsletter that I signed up for that isn't promotion or marketing, (note includes much discussion on apache org stuff)
+    archive: true
+
+  - name: events
+    description: anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights - does not include generic info on these topics, only actual concrete plans
+    archive: true
+
+  - name: purchases
+    description: any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise
+    archive: true
+
+  - name: enquiries
+    description: any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)
+    archive: false

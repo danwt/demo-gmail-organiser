@@ -2,7 +2,6 @@ services:
   classify:
     build: .
     env_file: .env
-    command: ["classify"]
+    command: ["run"]
     volumes:
       - ./token.json:/app/token.json
-      - ./mappings.json:/app/mappings.json
