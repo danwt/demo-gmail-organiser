@@ -1,12 +1,8 @@
 FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV PYTHONUNBUFFERED=1
-
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
 COPY main.py taxonomy.yaml ./
-
-ENTRYPOINT ["python", "main.py"]
+RUN uv sync --frozen --no-dev
+ENTRYPOINT ["uv", "run", "python", "main.py"]
