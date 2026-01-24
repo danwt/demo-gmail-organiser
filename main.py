@@ -4,6 +4,7 @@ import json
 import time
 import base64
 
+import yaml
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -15,53 +16,21 @@ from openai import OpenAI
 load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-
-GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
-GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-OPENROUTER_MODEL = os.environ["OPENROUTER_MODEL"]
-
-CATEGORIES = [
-    "family-and-friends",
-    "jobs",
-    "financial",
-    "businesses",
-    "cloud",
-    "junk",
-    "newsletter",
-    "events",
-    "purchases",
-    "enquiries",
-]
-
-CATEGORY_DESCRIPTIONS = {
-    "family-and-friends": "things directly sent to me by family and friends",
-    "jobs": "related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs, these are junk",
-    "financial": "related to property I own, my stocks, pensions, bank accounts, tax, crypto etc",
-    "businesses": "related to businesses I run",
-    "cloud": "anything related to cloud infra i'm running on various cloud accounts such as GCP AWS Cloudflare etc",
-    "junk": "any pure spam, scam, marketing, or promotion or other noise",
-    "newsletter": "any regular newsletter that I signed up for that isn't promotion or marketing, (note includes much discussion on apache org stuff)",
-    "events": "anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights",
-    "purchases": "any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise",
-    "enquiries": "any actual enquiries from actual people asking me things who aren't friends or family (not spam or automated)",
-}
-
 BATCH_SIZE = 20
-MAPPINGS_FILE = "mappings.json"
-ARCHIVE_CATEGORIES = {"junk", "newsletter", "purchases", "events"}
+TAXONOMY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "taxonomy.yaml")
 
 
-def get_client_config():
-    return {
-        "installed": {
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost"],
-        }
-    }
+def load_taxonomy():
+    with open(TAXONOMY_FILE) as f:
+        data = yaml.safe_load(f)
+    categories = []
+    for cat in data["categories"]:
+        categories.append({
+            "name": cat["name"],
+            "description": cat["description"],
+            "archive": cat.get("archive", False),
+        })
+    return categories
 
 
 def get_gmail_service():
@@ -72,7 +41,16 @@ def get_gmail_service():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_config(get_client_config(), SCOPES)
+            client_config = {
+                "installed": {
+                    "client_id": os.environ["GOOGLE_CLIENT_ID"],
+                    "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
         with open("token.json", "w") as f:
             f.write(creds.to_json())
@@ -82,28 +60,33 @@ def get_gmail_service():
 def get_llm_client():
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
+        api_key=os.environ["OPENROUTER_API_KEY"],
     )
 
 
-def ensure_labels(service):
+def ensure_labels(service, taxonomy):
     existing = service.users().labels().list(userId="me").execute().get("labels", [])
     label_map = {l["name"]: l["id"] for l in existing}
-    for cat in CATEGORIES:
-        if cat not in label_map:
+    for cat in taxonomy:
+        if cat["name"] not in label_map:
             created = service.users().labels().create(
-                userId="me", body={"name": cat, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+                userId="me",
+                body={"name": cat["name"], "labelListVisibility": "labelShow", "messageListVisibility": "show"},
             ).execute()
-            label_map[cat] = created["id"]
-            print(f"  Created label: {cat}")
+            label_map[cat["name"]] = created["id"]
+            print(f"  Created label: {cat['name']}")
     return label_map
+
+
+def build_unsorted_query(taxonomy):
+    return " ".join(f"-label:{cat['name']}" for cat in taxonomy)
 
 
 def extract_body_text(payload):
     if payload.get("mimeType", "").startswith("text/plain"):
         data = payload.get("body", {}).get("data", "")
         if data:
-                return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
     for part in payload.get("parts", []):
         text = extract_body_text(part)
         if text:
@@ -112,11 +95,8 @@ def extract_body_text(payload):
 
 
 def fetch_message_metadata(service, msg_id):
-    msg = service.users().messages().get(
-        userId="me", id=msg_id, format="full"
-    ).execute()
+    msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-    labels = msg.get("labelIds", [])
     body = extract_body_text(msg.get("payload", {}))
     return {
         "id": msg_id,
@@ -124,25 +104,20 @@ def fetch_message_metadata(service, msg_id):
         "subject": headers.get("Subject", ""),
         "snippet": msg.get("snippet", ""),
         "body": body[:1000],
-        "labels": labels,
     }
 
 
-def already_classified(msg_metadata, label_map):
-    label_ids = set(msg_metadata["labels"])
-    category_label_ids = set(label_map[cat] for cat in CATEGORIES)
-    return bool(label_ids & category_label_ids)
+def classify_batch(llm, messages, taxonomy):
+    category_names = [cat["name"] for cat in taxonomy]
+    categories_desc = "\n".join(f"- {cat['name']}: {cat['description']}" for cat in taxonomy)
 
-
-def classify_batch(llm, messages):
-    categories_desc = "\n".join(f"- {cat}: {desc}" for cat, desc in CATEGORY_DESCRIPTIONS.items())
     def format_email(i, m):
         lines = f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
         body = m.get("body", "").strip()
         if body:
-            lines += f'\n   Body: {body[:500]}'
+            lines += f"\n   Body: {body[:500]}"
         elif m.get("snippet"):
-            lines += f'\n   Preview: {m["snippet"]}'
+            lines += f"\n   Preview: {m['snippet']}"
         return lines
 
     emails_desc = "\n".join(format_email(i, m) for i, m in enumerate(messages))
@@ -151,7 +126,7 @@ def classify_batch(llm, messages):
 
 {categories_desc}
 
-To be aboslutely clear, the point of this is to filter signal from noise: when in doubt, default to junk!
+To be absolutely clear, the point of this is to filter signal from noise: when in doubt, default to junk!
 For example, a cold call or promotion is still junk even if it is promoting crypto or a job (i.e. it's not finance or job categories!)
 
 Emails:
@@ -161,7 +136,7 @@ Respond with a JSON array of strings, one category per email, in the same order.
 Only use category names from the list above. Respond with ONLY the JSON array, no other text."""
 
     resp = llm.chat.completions.create(
-        model=OPENROUTER_MODEL,
+        model=os.environ["OPENROUTER_MODEL"],
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
     )
@@ -174,139 +149,86 @@ Only use category names from the list above. Respond with ONLY the JSON array, n
     if len(classifications) != len(messages):
         raise ValueError(f"Expected {len(messages)} classifications, got {len(classifications)}")
     for c in classifications:
-        if c not in CATEGORIES:
+        if c not in category_names:
             raise ValueError(f"Invalid category: {c}")
     return classifications
 
 
-def load_mappings():
-    if os.path.exists(MAPPINGS_FILE):
-        with open(MAPPINGS_FILE) as f:
-            content = f.read().strip()
-            if content:
-                return json.loads(content)
-    return []
-
-
-def save_mappings(mappings):
-    with open(MAPPINGS_FILE, "w") as f:
-        json.dump(mappings, f, indent=2)
-
-
-def cmd_auth():
-    print("Running OAuth flow...")
-    get_gmail_service()
-    print("Auth complete, token.json saved.")
-
-
-def process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force=False):
+def process_batch(service, llm, label_map, taxonomy, msg_ids, batch_num):
+    archive_categories = {cat["name"] for cat in taxonomy if cat["archive"]}
     batch = []
-    category_label_ids = [label_map[cat] for cat in CATEGORIES]
     for msg_id in msg_ids:
-        if not force and msg_id in classified_ids:
-            continue
         meta = fetch_message_metadata(service, msg_id)
-        if not force and already_classified(meta, label_map):
-            classified_ids.add(msg_id)
-            continue
-        if force:
-            existing_cat_labels = [lid for lid in meta["labels"] if lid in category_label_ids]
-            if existing_cat_labels:
-                try:
-                    service.users().messages().modify(
-                        userId="me", id=msg_id,
-                        body={"removeLabelIds": existing_cat_labels}
-                    ).execute()
-                except HttpError:
-                    continue
         batch.append(meta)
 
     if not batch:
-        return
+        return 0
 
     try:
-        classifications = classify_batch(llm, batch)
+        classifications = classify_batch(llm, batch, taxonomy)
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"  ERROR in batch {batch_num}: {e}, retrying...")
+        print(f"  Batch {batch_num} classification error: {e}, retrying...")
         time.sleep(2)
         try:
-            classifications = classify_batch(llm, batch)
+            classifications = classify_batch(llm, batch, taxonomy)
         except Exception as e2:
-            print(f"  FAILED batch {batch_num}: {e2}, skipping")
-            return
+            print(f"  Batch {batch_num} failed: {e2}, skipping")
+            return 0
 
+    classified = 0
     for msg, cat in zip(batch, classifications):
         modify_body = {"addLabelIds": [label_map[cat]]}
-        if cat in ARCHIVE_CATEGORIES:
+        if cat in archive_categories:
             modify_body["removeLabelIds"] = ["INBOX"]
         try:
-            service.users().messages().modify(
-                userId="me", id=msg["id"],
-                body=modify_body
-            ).execute()
+            service.users().messages().modify(userId="me", id=msg["id"], body=modify_body).execute()
+            classified += 1
         except HttpError:
             continue
-        mappings.append({
-            "id": msg["id"],
-            "from": msg["from"],
-            "subject": msg["subject"],
-            "category": cat,
-        })
-        classified_ids.add(msg["id"])
 
-    save_mappings(mappings)
-    print(f"  Batch {batch_num} done: classified {len(batch)}, total {len(mappings)}")
+    print(f"  Batch {batch_num}: classified {classified} emails")
+    return classified
 
 
-def cmd_classify():
-    force = "--force" in sys.argv
+def run():
+    taxonomy = load_taxonomy()
     service = get_gmail_service()
     llm = get_llm_client()
 
-    print("Ensuring labels exist...")
-    label_map = ensure_labels(service)
-
-    if force:
-        print("Force mode: reclassifying all emails")
-        mappings = []
-        classified_ids = set()
-    else:
-        mappings = load_mappings()
-        classified_ids = {m["id"] for m in mappings}
-        print(f"Already classified: {len(classified_ids)}")
+    label_map = ensure_labels(service, taxonomy)
+    query = build_unsorted_query(taxonomy)
+    print(f"Querying for unsorted emails...")
 
     page_token = None
     batch_num = 0
-    total_fetched = 0
+    total_classified = 0
 
     while True:
         resp = service.users().messages().list(
-            userId="me", maxResults=BATCH_SIZE, pageToken=page_token
+            userId="me", q=query, maxResults=BATCH_SIZE, pageToken=page_token,
         ).execute()
-        msg_ids = [m["id"] for m in resp.get("messages", [])]
-        total_fetched += len(msg_ids)
-        batch_num += 1
 
-        print(f"  Processing batch {batch_num} ({total_fetched} fetched so far)...")
-        process_batch(service, llm, label_map, msg_ids, mappings, classified_ids, batch_num, force)
+        msg_ids = [m["id"] for m in resp.get("messages", [])]
+        if not msg_ids:
+            break
+
+        batch_num += 1
+        total_classified += process_batch(service, llm, label_map, taxonomy, msg_ids, batch_num)
 
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
 
-    print(f"Classification complete: {len(mappings)} emails classified")
-    print(f"Mappings saved to {MAPPINGS_FILE}")
+    print(f"Done: classified {total_classified} emails")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <auth|classify>")
-        sys.exit(1)
-    cmd = sys.argv[1]
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "auth":
-        cmd_auth()
-    elif cmd == "classify":
-        cmd_classify()
+        get_gmail_service()
+        print("Auth complete, token.json saved.")
+    elif cmd == "run":
+        run()
     else:
-        print(f"Unknown command: {cmd}")
+        print(f"Usage: python main.py [auth|run]")
         sys.exit(1)

@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 ENV PYTHONUNBUFFERED=1
 
-COPY main.py .
+COPY main.py taxonomy.yaml ./
 
 ENTRYPOINT ["python", "main.py"]
