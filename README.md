@@ -18,9 +18,7 @@ Categories are defined in [`taxonomy.yaml`](taxonomy.yaml) and are easy to modif
 ## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
 Copy `.env.example` to `.env` and fill in:
@@ -35,13 +33,13 @@ OPENROUTER_MODEL=google/gemini-2.0-flash-001
 Run OAuth (one-time, opens browser):
 
 ```bash
-python main.py auth
+uv run python main.py auth
 ```
 
 ## Usage
 
 ```bash
-python main.py
+uv run python main.py run
 ```
 
 Classifies all emails that don't yet have a category label. Safe to run repeatedly - only processes new/unlabelled emails.
