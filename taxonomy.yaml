@@ -32,7 +32,7 @@ categories:
     archive: true
 
   - name: purchases
-    description: any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise
+    description: any updates on things I've bought, their delivery, receipts, this includes regular paid subscriptions, note does not apply to TC changes and other noise. note, its very common to get promotions after buying a product etc which are not important, these should be considered noise
     archive: true
 
   - name: enquiries
