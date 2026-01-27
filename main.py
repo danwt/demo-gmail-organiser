@@ -127,7 +127,6 @@ def classify_batch(llm, messages, taxonomy):
 {categories_desc}
 
 To be absolutely clear, the point of this is to filter signal from noise: when in doubt, default to junk!
-For example, a cold call or promotion is still junk even if it is promoting crypto or a job (i.e. it's not finance or job categories!)
 
 Emails:
 {emails_desc}

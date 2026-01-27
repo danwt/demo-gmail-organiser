@@ -4,7 +4,7 @@ categories:
     archive: false
 
   - name: jobs
-    description: related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs/job newsletters, these are junk
+    description: related to jobs I applied for and interview processes etc, does NOT match cold calls/auto reach outs/job newsletters or linkedin general notifications, these are junk
     archive: false
 
   - name: financial
@@ -12,11 +12,11 @@ categories:
     archive: false
 
   - name: businesses
-    description: related to businesses I run
+    description: related to businesses I run, ie. queries about partnerships, customer support, product questions, warning and legal or financial notices
     archive: false
 
   - name: cloud
-    description: anything related to cloud infra i'm running/paying for on various cloud accounts such as GCP AWS Cloudflare etc
+    description: anything related to cloud infra i'm running/paying for on various cloud accounts such as GCP AWS Cloudflare etc inc advertising tools, paid apis, other cloud services
     archive: false
 
   - name: junk
