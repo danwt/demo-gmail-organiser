@@ -1,6 +1,6 @@
 .env
-token.json
 credentials.json
+.gogcli/
 __pycache__/
 *.pyc
 .venv/
