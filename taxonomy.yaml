@@ -28,7 +28,7 @@ categories:
     archive: true
 
   - name: events
-    description: anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights - does not include generic info on these topics, only actual concrete plans
+    description: anything related to tickets, events or travel plans I actually made such as cinema, holidays, hotel bookings, flights - does not include generic info or promo on these topics, only actual concrete plans
     archive: true
 
   - name: purchases

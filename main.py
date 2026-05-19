@@ -13,6 +13,7 @@ from openai import OpenAI
 load_dotenv()
 
 BATCH_SIZE = 20
+BODY_LIMIT = 4000
 TAXONOMY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "taxonomy.yaml")
 GOG_BIN = os.environ.get("GOG_BIN", "gog")
 GOG_ACCOUNT = os.environ.get("GOG_ACCOUNT", "danwtisdall")
@@ -194,7 +195,7 @@ def normalize_message(raw):
         "from": raw.get("from") or get_header(headers, "From"),
         "subject": raw.get("subject") or get_header(headers, "Subject"),
         "snippet": raw.get("snippet") or raw.get("preview") or "",
-        "body": body[:1000] if isinstance(body, str) else "",
+        "body": body[:BODY_LIMIT] if isinstance(body, str) else "",
     }
 
 
@@ -206,7 +207,7 @@ def classify_batch(llm, messages, taxonomy):
         lines = f'{i+1}. From: {m["from"]} | Subject: {m["subject"]}'
         body = m.get("body", "").strip()
         if body:
-            lines += f"\n   Body: {body[:500]}"
+            lines += f"\n   Body: {body[:BODY_LIMIT]}"
         elif m.get("snippet"):
             lines += f"\n   Preview: {m['snippet']}"
         return lines
@@ -218,6 +219,12 @@ def classify_batch(llm, messages, taxonomy):
 {categories_desc}
 
 To be absolutely clear, the point of this is to filter signal from noise: when in doubt, default to junk!
+
+Specific traps to watch for:
+- AliExpress / Amazon / Etsy / eBay / Shein / Temu and similar marketplaces: these senders blast both real order/shipping/delivery/receipt updates AND constant marketing/promo/recommendation/discount blasts. Read the body carefully. Only use "purchases" if the email is genuinely about an order I actually placed (order confirmation, shipping update, delivery, refund, receipt). If it's "deals you'll love", "recommended for you", "X% off", "flash sale", "items in your wishlist are on sale", price-drops on browsed items, or any generic promo — that is "junk", not "purchases".
+- LinkedIn: distinguish real human messages directed at me (a real person sending me a message, an interview-process update, a recruiter from a company I actually applied to) from LinkedIn's automated noise (job alerts, "people you may know", "X viewed your profile", "trending in your network", weekly digests, posts from companies, sponsored InMail / cold recruiter spam from people I have no relationship with). Real targeted human messages → "jobs" or "enquiries" as appropriate. Automated LinkedIn noise and cold recruiter spam → "junk".
+- Generic "your account / terms have been updated" / "new privacy policy" / "we've made changes" emails from services I use → "junk", not "purchases" or "cloud".
+- Cloud provider (GCP/AWS/Cloudflare/Vercel/etc) marketing, webinars, "what's new" newsletters → "junk" or "newsletter", NOT "cloud". Use "cloud" only for actual billing, usage alerts, security warnings, or operational notices on accounts I run.
 
 Emails:
 {emails_desc}
@@ -256,7 +263,7 @@ def apply_labels(message_ids, category, should_archive):
     return len(message_ids)
 
 
-def fetch_unsorted_messages(query):
+def fetch_messages(query):
     result = run_gog(
         [
             "gmail",
@@ -286,25 +293,22 @@ def fetch_unsorted_messages(query):
     return messages
 
 
-def run():
-    taxonomy = load_taxonomy()
-    llm = get_llm_client()
-
-    ensure_labels(taxonomy)
-    query = build_unsorted_query(taxonomy)
-    print(f"Querying for unsorted emails...")
-
-    messages = fetch_unsorted_messages(query)
-    if not messages:
-        print("Done: classified 0 emails")
+def strip_category_labels(taxonomy, message_ids):
+    if not message_ids:
         return
+    chunk_size = 500
+    remove_flags = [f"--remove={cat['name']}" for cat in taxonomy]
+    for i in range(0, len(message_ids), chunk_size):
+        chunk = message_ids[i:i + chunk_size]
+        run_gog(["gmail", "batch", "modify", *chunk, *remove_flags])
 
-    print(f"Found {len(messages)} candidate emails")
 
-    batch_num = 0
-    total_classified = 0
+def classify_and_apply(llm, taxonomy, messages):
+    if not messages:
+        return 0
     archive_categories = {cat["name"] for cat in taxonomy if cat["archive"]}
-
+    total_classified = 0
+    batch_num = 0
     for i in range(0, len(messages), BATCH_SIZE):
         batch_messages = messages[i:i + BATCH_SIZE]
         batch_num += 1
@@ -336,8 +340,46 @@ def run():
 
         total_classified += batch_classified
         print(f"  Batch {batch_num}: classified {batch_classified} emails")
+    return total_classified
 
+
+def run():
+    taxonomy = load_taxonomy()
+    llm = get_llm_client()
+
+    ensure_labels(taxonomy)
+    query = build_unsorted_query(taxonomy)
+    print("Querying for unsorted emails...")
+
+    messages = fetch_messages(query)
+    if not messages:
+        print("Done: classified 0 emails")
+        return
+
+    print(f"Found {len(messages)} candidate emails")
+    total_classified = classify_and_apply(llm, taxonomy, messages)
     print(f"Done: classified {total_classified} emails")
+
+
+def relabel(since_date):
+    gmail_date = since_date.replace("-", "/")
+
+    taxonomy = load_taxonomy()
+    llm = get_llm_client()
+    ensure_labels(taxonomy)
+
+    print(f"Querying for all emails since {gmail_date}...")
+    messages = fetch_messages(f"after:{gmail_date}")
+    if not messages:
+        print("Done: classified 0 emails")
+        return
+
+    print(f"Found {len(messages)} emails since {gmail_date}")
+    print("Stripping existing category labels...")
+    strip_category_labels(taxonomy, [m["id"] for m in messages])
+
+    total_classified = classify_and_apply(llm, taxonomy, messages)
+    print(f"Done: relabelled {total_classified} emails")
 
 
 def auth(credentials_path=None):
@@ -370,6 +412,11 @@ if __name__ == "__main__":
         auth(credentials_arg)
     elif cmd == "run":
         run()
+    elif cmd == "relabel":
+        if len(sys.argv) < 3:
+            print("Usage: python main.py relabel YYYY-MM-DD")
+            sys.exit(1)
+        relabel(sys.argv[2])
     else:
-        print("Usage: python main.py [auth [credentials.json]|run]")
+        print("Usage: python main.py [auth [credentials.json]|run|relabel YYYY-MM-DD]")
         sys.exit(1)
